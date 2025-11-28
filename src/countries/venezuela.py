@@ -19,6 +19,7 @@ from openpyxl.styles import PatternFill
 try:
     import gspread
     from google.oauth2.service_account import Credentials
+    from google.auth import default
     GOOGLE_SHEETS_AVAILABLE = True
 except ImportError:
     GOOGLE_SHEETS_AVAILABLE = False
@@ -31,6 +32,12 @@ def configurar_google_sheets():
         return None
     
     try:
+        # Configurar scopes necesarios
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive.file'
+        ]
+        
         # Buscar archivo de credenciales en diferentes ubicaciones
         posibles_archivos_cred = [
             'credentials.json',
@@ -46,25 +53,26 @@ def configurar_google_sheets():
                 archivo_credenciales = archivo
                 break
         
-        if not archivo_credenciales:
-            print("   ⚠️ Archivo de credenciales de Google no encontrado.")
-            print("   → Coloca el archivo JSON de service account en una de estas ubicaciones:")
-            for archivo in posibles_archivos_cred[:3]:
-                print(f"     • {archivo}")
-            return None
-        
-        # Configurar scopes necesarios
-        scopes = [
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/drive.file'
-        ]
-        
-        # Autenticar usando service account
-        credentials = Credentials.from_service_account_file(archivo_credenciales, scopes=scopes)
-        gc = gspread.authorize(credentials)
-        
-        print(f"   ✓ Conexión a Google Sheets configurada usando: {archivo_credenciales}")
-        return gc
+        if archivo_credenciales:
+            # Usar archivo de credenciales si está disponible (desarrollo local)
+            credentials = Credentials.from_service_account_file(archivo_credenciales, scopes=scopes)
+            gc = gspread.authorize(credentials)
+            print(f"   ✓ Conexión a Google Sheets configurada usando archivo: {archivo_credenciales}")
+            return gc
+        else:
+            # Intentar usar Application Default Credentials (Cloud Run, GCE, etc.)
+            try:
+                credentials, project = default(scopes=scopes)
+                # gspread puede tener problemas con credenciales de Compute Engine
+                # Intentar autorizar con las credenciales de ADC
+                gc = gspread.authorize(credentials)
+                print(f"   ✓ Conexión a Google Sheets configurada usando Application Default Credentials")
+                return gc
+            except Exception as adc_error:
+                print(f"   ⚠️ No se pudo configurar Google Sheets con ADC: {str(adc_error)}")
+                print("   → Para usar Google Sheets en Cloud Run, necesitas un archivo de credenciales con clave privada")
+                print("   → O configura la cuenta de servicio con permisos de Google Sheets API")
+                return None
         
     except Exception as e:
         print(f"   ❌ Error al configurar Google Sheets: {str(e)}")

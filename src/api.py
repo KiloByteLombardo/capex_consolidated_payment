@@ -71,7 +71,8 @@ CREDENTIALS_FILE = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
 def crear_cliente_bigquery():
     """Crear cliente de BigQuery con credenciales"""
     try:
-        if os.path.exists(CREDENTIALS_FILE):
+        # Si hay un archivo de credenciales especificado y existe, usarlo
+        if CREDENTIALS_FILE and os.path.exists(CREDENTIALS_FILE):
             credentials = service_account.Credentials.from_service_account_file(
                 CREDENTIALS_FILE,
                 scopes=["https://www.googleapis.com/auth/bigquery"]
@@ -80,11 +81,12 @@ def crear_cliente_bigquery():
                 credentials=credentials,
                 project=GCP_PROJECT_ID
             )
-            print(f"✅ Cliente BigQuery creado para proyecto: {GCP_PROJECT_ID}")
+            print(f"✅ Cliente BigQuery creado para proyecto: {GCP_PROJECT_ID} (usando archivo de credenciales)")
             return client
         else:
+            # Usar Application Default Credentials (ADC) - funciona en Cloud Run, GCE, etc.
             client = bigquery.Client(project=GCP_PROJECT_ID)
-            print(f"✅ Cliente BigQuery creado con ADC")
+            print(f"✅ Cliente BigQuery creado con ADC para proyecto: {GCP_PROJECT_ID}")
             return client
             
     except Exception as e:
@@ -819,18 +821,23 @@ def subir_archivo_a_gcs(storage_client: storage.Client, archivo_local: str) -> D
         # Subir archivo
         blob.upload_from_filename(archivo_local, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
         
-        # Hacer el blob público
-        # blob.make_public()
+        # Hacer el blob público para que sea accesible sin autenticación
+        try:
+            blob.make_public()
+            print(f"   ✓ Archivo configurado como público")
+        except Exception as public_error:
+            print(f"   ⚠️ No se pudo hacer el archivo público: {str(public_error)}")
+            print(f"   → Verifica que la cuenta de servicio tenga permisos 'storage.objects.setIamPolicy'")
+            print(f"   → O configura el bucket para permitir acceso público")
         
-        # Obtener URL pública
-        url_publica = blob.generate_signed_url(
-            version="v4",
-            expiration=21600,  # segundos (6 horas)
-            method='GET'
-        )
+        # Usar URL pública del blob (siempre disponible después de make_public)
+        url_publica = blob.public_url
+        if not url_publica or 'storage.googleapis.com' not in url_publica:
+            # Construir URL pública manualmente si es necesario
+            url_publica = f"https://storage.googleapis.com/{GCS_BUCKET_NAME}/{nombre_blob}"
         
         print(f"✅ Archivo subido exitosamente")
-        print(f"   URL: {url_publica}")
+        print(f"   URL pública: {url_publica}")
         
         return url_publica, nombre_blob
         
@@ -1066,17 +1073,19 @@ def ajustar_df_a_schema_bigquery(df, client, dataset_id, table_id):
 def crear_cliente_storage():
     """Crear cliente de Google Cloud Storage"""
     try:
-        if os.path.exists(CREDENTIALS_FILE):
+        # Si hay un archivo de credenciales especificado y existe, usarlo
+        if CREDENTIALS_FILE and os.path.exists(CREDENTIALS_FILE):
             credentials = service_account.Credentials.from_service_account_file(
                 CREDENTIALS_FILE,
                 scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             client = storage.Client(credentials=credentials, project=GCP_PROJECT_ID)
-            print(f"✅ Cliente GCS creado")
+            print(f"✅ Cliente GCS creado (usando archivo de credenciales)")
             return client
         else:
+            # Usar Application Default Credentials (ADC) - funciona en Cloud Run, GCE, etc.
             client = storage.Client(project=GCP_PROJECT_ID)
-            print(f"✅ Cliente GCS creado con ADC")
+            print(f"✅ Cliente GCS creado con ADC para proyecto: {GCP_PROJECT_ID}")
             return client
     except Exception as e:
         print(f"❌ Error creando cliente GCS: {e}")
