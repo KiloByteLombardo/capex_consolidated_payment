@@ -4,6 +4,7 @@ Versión con verificación de duplicados embebida
 """
 
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from google.cloud import storage
@@ -56,6 +57,15 @@ except ImportError as e:
 #     print(f"⚠️ No se pudo importar argentina: {e}")
 
 app = Flask(__name__)
+
+# Configurar CORS para permitir solicitudes desde el frontend
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",  # En producción, especifica los orígenes permitidos
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # =================== CONFIGURACIÓN ===================
 
