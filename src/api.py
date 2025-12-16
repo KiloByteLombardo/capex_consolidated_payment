@@ -813,7 +813,7 @@ def extraer_tabla_completa_por_lotes_colombia(client: bigquery.Client) -> pd.Dat
     
     return df_completo
 
-def extraer_responsables_capex(bq_client, anio_fiscal: str = None) -> pd.DataFrame:
+def extraer_responsables_capex_venezuela(bq_client, anio_fiscal: str = None) -> pd.DataFrame:
     """
     Extraer datos de la tabla vzla_capex_pago_responsable de BigQuery
     
@@ -1309,6 +1309,111 @@ def cargar_diferencia_a_bigquery_venezuela(bq_client, df_tabla2: pd.DataFrame, a
     # Asegurarse de que el índice no tenga nombre que cause problemas
     df_bq.index.name = None
     
+    # ===================================================================
+    # CALCULAR REMANENTE DEL MES ACTUAL BASADO EN DIFERENCIA DEL MES ANTERIOR
+    # Si hay cambio de mes, el remanente = presupuesto_mes_anterior - ejecutado_mes_anterior
+    # ===================================================================
+    print(f"\n🔄 Verificando cambio de mes para calcular remanente...")
+    
+    # Obtener mes actual y mes anterior (basado en viernes pasado)
+    from dateutil.relativedelta import relativedelta
+    
+    mes_actual = viernes_pasado
+    mes_anterior = viernes_pasado - relativedelta(months=1)
+    
+    # Formatear meses para comparación (formato: 'NOV-25')
+    meses_espanol = {
+        'JANUARY': 'ENE', 'FEBRUARY': 'FEB', 'MARCH': 'MAR', 'APRIL': 'ABR',
+        'MAY': 'MAY', 'JUNE': 'JUN', 'JULY': 'JUL', 'AUGUST': 'AGO',
+        'SEPTEMBER': 'SEP', 'OCTOBER': 'OCT', 'NOVEMBER': 'NOV', 'DECEMBER': 'DIC'
+    }
+    mes_actual_str = meses_espanol.get(mes_actual.strftime('%B').upper(), mes_actual.strftime('%b').upper())
+    mes_anterior_str = meses_espanol.get(mes_anterior.strftime('%B').upper(), mes_anterior.strftime('%b').upper())
+    mes_actual_formato = f"{mes_actual_str}-{mes_actual.strftime('%y')}"
+    mes_anterior_formato = f"{mes_anterior_str}-{mes_anterior.strftime('%y')}"
+    
+    print(f"   Mes actual: {mes_actual_formato}")
+    print(f"   Mes anterior: {mes_anterior_formato}")
+    
+    # Calcular rango de fechas del año fiscal para la query
+    anio_inicio_int = int(anio_fiscal.split('-')[0])
+    fecha_inicio_query = f"{anio_inicio_int}-08-01"
+    fecha_fin_query = f"{anio_inicio_int + 1}-07-31"
+    
+    # Consultar BigQuery para obtener datos del mes anterior
+    table_id_diferencia = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE_DIFERENCIA}"
+    query_mes_anterior = f"""
+    WITH datos_recientes AS (
+        SELECT
+            vzla_capex_diferencia_mes,
+            vzla_capex_diferencia_tipo,
+            vzla_capex_diferencia_area,
+            vzla_capex_diferencia_presupuesto,
+            vzla_capex_diferencia_ejecutado,
+            ROW_NUMBER() OVER (
+                PARTITION BY vzla_capex_diferencia_area, vzla_capex_diferencia_tipo
+                ORDER BY vzla_capex_diferencia_fecha_ejecucion DESC
+            ) as rn
+        FROM `{table_id_diferencia}`
+        WHERE vzla_capex_diferencia_mes = '{mes_anterior_formato}'
+          AND vzla_capex_diferencia_fecha_ejecucion BETWEEN '{fecha_inicio_query}' AND '{fecha_fin_query}'
+    )
+    SELECT
+        vzla_capex_diferencia_tipo,
+        vzla_capex_diferencia_area,
+        vzla_capex_diferencia_presupuesto,
+        vzla_capex_diferencia_ejecutado
+    FROM datos_recientes
+    WHERE rn = 1
+    """
+    
+    try:
+        df_mes_anterior = bq_client.query(query_mes_anterior).to_dataframe()
+        print(f"   ✅ Datos del mes anterior encontrados: {len(df_mes_anterior)} registros")
+        
+        if not df_mes_anterior.empty:
+            # Calcular nuevo remanente: presupuesto - ejecutado (diferencia del mes anterior)
+            df_mes_anterior['nuevo_remanente'] = (
+                df_mes_anterior['vzla_capex_diferencia_presupuesto'] - 
+                df_mes_anterior['vzla_capex_diferencia_ejecutado']
+            )
+            
+            # Crear diccionario de lookup: (tipo, area) -> nuevo_remanente
+            lookup_remanente = {}
+            for _, row in df_mes_anterior.iterrows():
+                key = (str(row['vzla_capex_diferencia_tipo']), str(row['vzla_capex_diferencia_area']))
+                lookup_remanente[key] = row['nuevo_remanente']
+            
+            print(f"   📊 Calculando remanente del mes actual basado en diferencia del mes anterior...")
+            print(f"   → Remanente = Presupuesto({mes_anterior_formato}) - Ejecutado({mes_anterior_formato})")
+            
+            # Aplicar nuevo remanente a df_bq
+            remanentes_actualizados = 0
+            for idx in df_bq.index:
+                tipo = df_bq.loc[idx, 'vzla_capex_diferencia_tipo']
+                area = df_bq.loc[idx, 'vzla_capex_diferencia_area']
+                key = (str(tipo), str(area))
+                
+                if key in lookup_remanente:
+                    nuevo_remanente = lookup_remanente[key]
+                    # Solo actualizar si el remanente actual es diferente (evitar sobrescribir si ya está correcto)
+                    remanente_actual = df_bq.loc[idx, nombre_remanente]
+                    if abs(float(remanente_actual) - float(nuevo_remanente)) > 0.01:  # Tolerancia para comparación de floats
+                        df_bq.loc[idx, nombre_remanente] = nuevo_remanente
+                        remanentes_actualizados += 1
+                        print(f"      {area} ({tipo}): {remanente_actual:.2f} → {nuevo_remanente:.2f}")
+            
+            print(f"   ✅ Remanentes actualizados: {remanentes_actualizados} de {len(df_bq)}")
+        else:
+            print(f"   ⚠️ No se encontraron datos del mes anterior ({mes_anterior_formato})")
+            print(f"   → Usando remanente del DataFrame original")
+    except Exception as e:
+        print(f"   ⚠️ Error consultando mes anterior: {e}")
+        print(f"   → Usando remanente del DataFrame original")
+        import traceback
+        traceback.print_exc()
+    
+    # Asignar valores a las columnas de BigQuery
     df_bq['vzla_capex_diferencia_remanente'] = df_bq[nombre_remanente]
     df_bq['vzla_capex_diferencia_presupuesto'] = df_bq[nombre_presupuesto]
     df_bq['vzla_capex_diferencia_ejecutado'] = df_bq[nombre_ejecutado]
@@ -1403,6 +1508,9 @@ def verificar_duplicados_diferencia_colombia(bq_client, ids_a_verificar: List[st
     Verificar qué IDs ya existen en BigQuery para evitar duplicados
     Procesa en lotes para evitar queries muy largas
     
+    IMPORTANTE: La tabla está particionada por col_capex_diferencia_fecha_ejecucion,
+    por lo que se requiere un filtro sobre esa columna.
+    
     Args:
         bq_client: Cliente de BigQuery
         ids_a_verificar: Lista de IDs a verificar
@@ -1414,11 +1522,27 @@ def verificar_duplicados_diferencia_colombia(bq_client, ids_a_verificar: List[st
         return set()
     
     try:
+        from datetime import datetime, timedelta
+        
         table_id_diferencia = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET_COP}.{BIGQUERY_TABLE_DIFERENCIA_COP}"
         ids_existentes = set()
         batch_size = 1000  # Procesar en lotes de 1000 IDs
         
+        # Calcular rango de fechas del año fiscal actual para el filtro de partición
+        hoy = datetime.now()
+        if hoy.month >= 8:  # Agosto o después
+            anio_inicio = hoy.year
+            anio_fin = hoy.year + 1
+        else:
+            anio_inicio = hoy.year - 1
+            anio_fin = hoy.year
+        
+        # Rango de fechas del año fiscal (Agosto a Julio)
+        fecha_inicio = f"{anio_inicio}-08-01"
+        fecha_fin = f"{anio_fin}-07-31"
+        
         print(f"🔍 Verificando {len(ids_a_verificar)} IDs en BigQuery (en lotes de {batch_size})...")
+        print(f"   📅 Filtro de partición: {fecha_inicio} a {fecha_fin}")
         
         # Procesar en lotes
         for i in range(0, len(ids_a_verificar), batch_size):
@@ -1428,10 +1552,12 @@ def verificar_duplicados_diferencia_colombia(bq_client, ids_a_verificar: List[st
             ids_escaped = [f"'{id_val.replace(chr(39), chr(39)+chr(39))}'" for id_val in batch]
             ids_list = ",".join(ids_escaped)
             
+            # IMPORTANTE: Agregar filtro sobre col_capex_diferencia_fecha_ejecucion para partición
             query = f"""
             SELECT DISTINCT col_capex_diferencia_id
             FROM `{table_id_diferencia}`
             WHERE col_capex_diferencia_id IN ({ids_list})
+              AND col_capex_diferencia_fecha_ejecucion BETWEEN '{fecha_inicio}' AND '{fecha_fin}'
             """
             
             query_job = bq_client.query(query)
@@ -1586,6 +1712,120 @@ def cargar_diferencia_a_bigquery_colombia(bq_client, df_tabla2: pd.DataFrame, an
     # Asegurarse de que el índice no tenga nombre que cause problemas
     df_bq.index.name = None
     
+    # ===================================================================
+    # CALCULAR REMANENTE DEL MES ACTUAL BASADO EN DIFERENCIA DEL MES ANTERIOR
+    # Si hay cambio de mes, el remanente = presupuesto_mes_anterior - ejecutado_mes_anterior
+    # ===================================================================
+    print(f"\n🔄 Verificando cambio de mes para calcular remanente...")
+    
+    # Obtener mes actual y mes anterior (basado en viernes pasado)
+    import datetime as dt
+    from dateutil.relativedelta import relativedelta
+    
+    hoy_date = dt.date.today()
+    dia_semana_actual = hoy_date.weekday()
+    dias_hasta_viernes_esta_semana = (4 - dia_semana_actual) % 7
+    if dias_hasta_viernes_esta_semana == 0:
+        dias_retroceso = 7
+    else:
+        dias_retroceso = dias_hasta_viernes_esta_semana + 7
+    viernes_pasado = hoy_date - dt.timedelta(days=dias_retroceso)
+    mes_actual = viernes_pasado
+    mes_anterior = viernes_pasado - relativedelta(months=1)
+    
+    # Formatear meses para comparación (formato: 'NOV-25')
+    meses_espanol = {
+        'JANUARY': 'ENE', 'FEBRUARY': 'FEB', 'MARCH': 'MAR', 'APRIL': 'ABR',
+        'MAY': 'MAY', 'JUNE': 'JUN', 'JULY': 'JUL', 'AUGUST': 'AGO',
+        'SEPTEMBER': 'SEP', 'OCTOBER': 'OCT', 'NOVEMBER': 'NOV', 'DECEMBER': 'DIC'
+    }
+    mes_actual_str = meses_espanol.get(mes_actual.strftime('%B').upper(), mes_actual.strftime('%b').upper())
+    mes_anterior_str = meses_espanol.get(mes_anterior.strftime('%B').upper(), mes_anterior.strftime('%b').upper())
+    mes_actual_formato = f"{mes_actual_str}-{mes_actual.strftime('%y')}"
+    mes_anterior_formato = f"{mes_anterior_str}-{mes_anterior.strftime('%y')}"
+    
+    print(f"   Mes actual: {mes_actual_formato}")
+    print(f"   Mes anterior: {mes_anterior_formato}")
+    
+    # Calcular rango de fechas del año fiscal para la query
+    anio_inicio_int = int(anio_fiscal.split('-')[0])
+    fecha_inicio_query = f"{anio_inicio_int}-08-01"
+    fecha_fin_query = f"{anio_inicio_int + 1}-07-31"
+    
+    # Consultar BigQuery para obtener datos del mes anterior
+    table_id_diferencia = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET_COP}.{BIGQUERY_TABLE_DIFERENCIA_COP}"
+    query_mes_anterior = f"""
+    WITH datos_recientes AS (
+        SELECT
+            col_capex_diferencia_mes,
+            col_capex_diferencia_tipo,
+            col_capex_diferencia_area,
+            col_capex_diferencia_presupuesto,
+            col_capex_diferencia_ejecutado,
+            ROW_NUMBER() OVER (
+                PARTITION BY col_capex_diferencia_area, col_capex_diferencia_tipo
+                ORDER BY col_capex_diferencia_fecha_ejecucion DESC
+            ) as rn
+        FROM `{table_id_diferencia}`
+        WHERE col_capex_diferencia_mes = '{mes_anterior_formato}'
+          AND col_capex_diferencia_fecha_ejecucion BETWEEN '{fecha_inicio_query}' AND '{fecha_fin_query}'
+    )
+    SELECT
+        col_capex_diferencia_tipo,
+        col_capex_diferencia_area,
+        col_capex_diferencia_presupuesto,
+        col_capex_diferencia_ejecutado
+    FROM datos_recientes
+    WHERE rn = 1
+    """
+    
+    try:
+        df_mes_anterior = bq_client.query(query_mes_anterior).to_dataframe()
+        print(f"   ✅ Datos del mes anterior encontrados: {len(df_mes_anterior)} registros")
+        
+        if not df_mes_anterior.empty:
+            # Calcular nuevo remanente: presupuesto - ejecutado (diferencia del mes anterior)
+            df_mes_anterior['nuevo_remanente'] = (
+                df_mes_anterior['col_capex_diferencia_presupuesto'] - 
+                df_mes_anterior['col_capex_diferencia_ejecutado']
+            )
+            
+            # Crear diccionario de lookup: (tipo, area) -> nuevo_remanente
+            lookup_remanente = {}
+            for _, row in df_mes_anterior.iterrows():
+                key = (str(row['col_capex_diferencia_tipo']), str(row['col_capex_diferencia_area']))
+                lookup_remanente[key] = row['nuevo_remanente']
+            
+            print(f"   📊 Calculando remanente del mes actual basado en diferencia del mes anterior...")
+            print(f"   → Remanente = Presupuesto({mes_anterior_formato}) - Ejecutado({mes_anterior_formato})")
+            
+            # Aplicar nuevo remanente a df_bq
+            remanentes_actualizados = 0
+            for idx in df_bq.index:
+                tipo = df_bq.loc[idx, 'col_capex_diferencia_tipo']
+                area = df_bq.loc[idx, 'col_capex_diferencia_area']
+                key = (str(tipo), str(area))
+                
+                if key in lookup_remanente:
+                    nuevo_remanente = lookup_remanente[key]
+                    # Solo actualizar si el remanente actual es diferente (evitar sobrescribir si ya está correcto)
+                    remanente_actual = df_bq.loc[idx, nombre_remanente]
+                    if abs(float(remanente_actual) - float(nuevo_remanente)) > 0.01:  # Tolerancia para comparación de floats
+                        df_bq.loc[idx, nombre_remanente] = nuevo_remanente
+                        remanentes_actualizados += 1
+                        print(f"      {area} ({tipo}): {remanente_actual:.2f} → {nuevo_remanente:.2f}")
+            
+            print(f"   ✅ Remanentes actualizados: {remanentes_actualizados} de {len(df_bq)}")
+        else:
+            print(f"   ⚠️ No se encontraron datos del mes anterior ({mes_anterior_formato})")
+            print(f"   → Usando remanente del DataFrame original")
+    except Exception as e:
+        print(f"   ⚠️ Error consultando mes anterior: {e}")
+        print(f"   → Usando remanente del DataFrame original")
+        import traceback
+        traceback.print_exc()
+    
+    # Asignar valores a las columnas de BigQuery
     df_bq['col_capex_diferencia_remanente'] = df_bq[nombre_remanente]
     df_bq['col_capex_diferencia_presupuesto'] = df_bq[nombre_presupuesto]
     df_bq['col_capex_diferencia_ejecutado'] = df_bq[nombre_ejecutado]
@@ -2458,6 +2698,7 @@ def upload_bosqueto():
             df_bigquery = extraer_tabla_completa_por_lotes_venezuela(bq_client)
         elif pais.lower() == 'colombia':
             df_bigquery = extraer_tabla_completa_por_lotes_colombia(bq_client)
+        
         if not df_bigquery.empty:
             if pais.lower() == 'venezuela':
                 df_detalle_corregido = mapear_bigquery_a_excel_columns_venezuela(df_bigquery)
@@ -2483,7 +2724,10 @@ def upload_bosqueto():
             crear_hoja_capex_colombia(archivo_bosqueto, df_detalle_corregido)
 
         print(f"\n📊 PASO 6.6: Extrayendo datos de Responsables...")
-        df_responsables = extraer_responsables_capex(bq_client)
+        if pais.lower() == 'venezuela':
+            df_responsables = extraer_responsables_capex_venezuela(bq_client)
+        elif pais.lower() == 'colombia':
+            df_responsables = extraer_responsables_capex_colombia(bq_client)
 
         if not df_responsables.empty:
             # PASO 6.7: Crear hoja Presupuesto Mensual
@@ -2595,15 +2839,15 @@ def table_info():
     """Endpoint para obtener información de la tabla BigQuery"""
     try:
         client = crear_cliente_bigquery()
-        table_id = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
+        table_id = f"{GCP_PROJECT_ID}.{BIGQUERY_DATASET_COP}.{BIGQUERY_TABLE_COP}"
         
         table = client.get_table(table_id)
         
         return jsonify({
             'success': True,
             'project': GCP_PROJECT_ID,
-            'dataset': BIGQUERY_DATASET,
-            'table': BIGQUERY_TABLE,
+            'dataset': BIGQUERY_DATASET_COP,
+            'table': BIGQUERY_TABLE_COP,
             'num_rows': table.num_rows,
             'num_columns': len(table.schema),
             'created': table.created.isoformat() if table.created else None,

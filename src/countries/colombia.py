@@ -1493,27 +1493,15 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
         area_str = str(area).strip()
         area_upper = area_str.upper()
         
-        # Presidencia → Dirección de Retail (case insensitive)
-        if 'PRESIDENCIA' in area_upper:
-            return 'Dirección de Retail'
         
-        # Dirección de Retail / DIRECCIÓN DE RETAIL → Dirección de Retail (normalizar)
-        if 'DIRECCION' in area_upper and 'RETAIL' in area_upper:
-            return 'Dirección de Retail'
+        # Mantenimiento y Protección Integral → Operaciones (fusionar)
+        if 'MANTENIMIENTO' in area_upper:
+            return 'Operaciones'
+        if 'PROTECCION' in area_upper and 'INTEGRAL' in area_upper:
+            return 'Operaciones'
+        if 'PROTECCIÓN' in area_upper and 'INTEGRAL' in area_upper:
+            return 'Operaciones'
         
-        # TI → VP Tecnología de la Información (case insensitive)
-        if area_upper in ['TI', 'T.I.', 'T.I']:
-            return 'VP Tecnología de la Información'
-        
-        # VP Tecnología de la Información / VP TECNOLOGIA DE LA INFORMACION → VP Tecnología de la Información (normalizar)
-        if 'TECNOLOGIA' in area_upper and 'INFORMACION' in area_upper:
-            return 'VP Tecnología de la Información'
-        
-        # Eliminar Importación y Servicios
-        if 'IMPORTACION' in area_upper or 'IMPORTACIÓN' in area_upper:
-            return None  # Marcar para eliminar
-        if 'SERVICIOS' in area_upper:
-            return None  # Marcar para eliminar
         
         return area_str
     
@@ -1536,115 +1524,245 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
     print(f"   Ejecutado - Áreas: {df_ej['area'].nunique()}")
     
     # ===================================================================
-    # MANEJAR DIR CONSTRUCCIÓN Y PROYECTOS (SEPARAR ORD Y EXT)
+    # MANEJAR EXTRAORDINARIO Y ORDINARIO PARA COLOMBIA
     # ===================================================================
-    # Identificar DIR CONSTRUCCIÓN Y PROYECTOS
-    def es_construccion_proyectos(area):
-        """Verificar si es DIR CONSTRUCCIÓN Y PROYECTOS"""
-        if pd.isna(area):
-            return False
-        area_str = str(area).strip().upper()
-        return 'DIR CONSTRUCCIÓN' in area_str and 'PROYECTOS' in area_str
+    # En Colombia: EXTRAORDINARIO = áreas sin "O " al inicio
+    #              ORDINARIO = áreas con "O " al inicio
+    # Áreas afectadas: Cadena de Suministros, Expansion, Tecnologia de la Informacion
     
-    # IMPORTANTE: Para CONSTRUCCIÓN, necesitamos separar según acento ANTES de pivotar
-    # Crear una función para identificar si tiene acento
-    def tiene_acento_construccion(area):
-        """Verificar si CONSTRUCCIÓN tiene acento (EXTRAORDINARIO)"""
+    def es_area_con_tipo_separado(area):
+        """Verificar si el área tiene versión ORDINARIO y EXTRAORDINARIO"""
         if pd.isna(area):
             return False
         area_str = str(area).strip()
-        # Buscar "CONSTRUCCIÓN" con acento (ó) vs "CONSTRUCCION" sin acento
-        # Si tiene acento (ó), es EXTRAORDINARIO
-        # Verificar si contiene el carácter con acento (ó) en cualquier variación
-        return 'CONSTRUCCIÓN' in area_str or 'CONSTRUCCIÓN' in area_str.upper() or 'ó' in area_str or 'Ó' in area_str
+        area_upper = area_str.upper()
+        
+        # Áreas que tienen versión ORD y EXT
+        areas_especiales = [
+            'CADENA DE SUMINISTROS',
+            'CADENA DE SUMINISTRO',
+            'EXPANSION',
+            'EXPANSIÓN',
+            'TECNOLOGIA DE LA INFORMACION',
+            'TECNOLOGÍA DE LA INFORMACIÓN',
+            'TECNOLOGIA DE LA INFORMACIÓN',
+            'TECNOLOGÍA DE LA INFORMACION'
+        ]
+        
+        # Remover "O " si existe para comparar
+        area_sin_o = area_upper.replace('O ', '').strip()
+        
+        return any(area_especial in area_sin_o for area_especial in areas_especiales)
     
-    # Separar df_dif en CONSTRUCCIÓN con acento y sin acento
-    df_dif_construccion = df_dif[df_dif['area'].apply(es_construccion_proyectos)].copy()
-    df_dif_otros = df_dif[~df_dif['area'].apply(es_construccion_proyectos)].copy()
+    def es_ordinario(area):
+        """Verificar si el área es ORDINARIO (tiene "O " al inicio)"""
+        if pd.isna(area):
+            return False
+        area_str = str(area).strip()
+        return area_str.upper().startswith('O ')
     
-    # Para CONSTRUCCIÓN, separar según acento
-    df_dif_construccion_extra = df_dif_construccion[df_dif_construccion['area'].apply(tiene_acento_construccion)].copy()
-    df_dif_construccion_ord = df_dif_construccion[~df_dif_construccion['area'].apply(tiene_acento_construccion)].copy()
+    def normalizar_nombre_area(area):
+        """Remover "O " del inicio para normalizar el nombre"""
+        if pd.isna(area):
+            return area
+        area_str = str(area).strip()
+        if area_str.upper().startswith('O '):
+            return area_str[2:].strip()  # Remover "O " y espacios
+        return area_str
+    
+    # Separar áreas con tipo separado y otras áreas
+    df_dif_especiales = df_dif[df_dif['area'].apply(es_area_con_tipo_separado)].copy()
+    df_dif_otros = df_dif[~df_dif['area'].apply(es_area_con_tipo_separado)].copy()
+    
+    # Para áreas especiales, separar por ORD y EXT
+    df_dif_especiales_ord = df_dif_especiales[df_dif_especiales['area'].apply(es_ordinario)].copy()
+    df_dif_especiales_extra = df_dif_especiales[~df_dif_especiales['area'].apply(es_ordinario)].copy()
     
     # Agregar columna temporal para identificar tipo
-    if not df_dif_construccion_extra.empty:
-        df_dif_construccion_extra['tipo_temp'] = 'EXTRAORDINARIO'
-    if not df_dif_construccion_ord.empty:
-        df_dif_construccion_ord['tipo_temp'] = 'ORDINARIO'
+    if not df_dif_especiales_ord.empty:
+        df_dif_especiales_ord['tipo_temp'] = 'ORDINARIO'
+    if not df_dif_especiales_extra.empty:
+        df_dif_especiales_extra['tipo_temp'] = 'EXTRAORDINARIO'
     
-    # Normalizar nombre de área para CONSTRUCCIÓN (usar mismo nombre para ambas)
-    area_construccion_nombre = 'DIR CONSTRUCCIÓN Y PROYECTOS'  # Nombre estándar
-    if not df_dif_construccion_extra.empty:
-        df_dif_construccion_extra['area'] = area_construccion_nombre
-    if not df_dif_construccion_ord.empty:
-        df_dif_construccion_ord['area'] = area_construccion_nombre
+    # Normalizar nombres de áreas (remover "O " para que tengan el mismo nombre base)
+    if not df_dif_especiales_ord.empty:
+        df_dif_especiales_ord['area'] = df_dif_especiales_ord['area'].apply(normalizar_nombre_area)
+    if not df_dif_especiales_extra.empty:
+        df_dif_especiales_extra['area'] = df_dif_especiales_extra['area'].apply(normalizar_nombre_area)
     
     # Recombinar
-    df_dif_procesado = pd.concat([df_dif_otros, df_dif_construccion_extra, df_dif_construccion_ord], ignore_index=True)
+    df_dif_procesado = pd.concat([df_dif_otros, df_dif_especiales_ord, df_dif_especiales_extra], ignore_index=True)
     
-    # Pivotar diferencia para obtener Presupuesto y Remanente
-    # Para CONSTRUCCIÓN, necesitamos pivotar por área Y tipo
+    # ===================================================================
+    # FILTRAR POR MES ANTES DE PIVOTAR (CRÍTICO: Evita sumar múltiples meses)
+    # ===================================================================
+    # Normalizar columna 'mes' a mayúsculas para comparación
+    df_dif_procesado['mes'] = df_dif_procesado['mes'].astype(str).str.upper().str.strip()
+    
+    # Crear mapeo de meses para comparación
+    mes_actual_upper = mes_actual_str.upper()
+    mes_anterior_upper = mes_anterior_str.upper()
+    
+    print(f"\n🔍 FILTRANDO DATOS POR MES (CRÍTICO para evitar sumas incorrectas):")
+    print(f"   Remanente: {mes_anterior_upper} (mes anterior)")
+    print(f"   Presupuesto: {mes_actual_upper} (mes actual)")
+    
+    # Verificar qué meses hay en los datos
+    meses_disponibles = df_dif_procesado['mes'].unique()
+    print(f"   Meses disponibles en datos: {list(meses_disponibles)}")
+    
+    # Filtrar para remanente (mes anterior) y presupuesto (mes actual)
+    df_dif_remanente = df_dif_procesado[df_dif_procesado['mes'] == mes_anterior_upper].copy()
+    df_dif_presupuesto = df_dif_procesado[df_dif_procesado['mes'] == mes_actual_upper].copy()
+    
+    print(f"   Registros para remanente ({mes_anterior_upper}): {len(df_dif_remanente)}")
+    print(f"   Registros para presupuesto ({mes_actual_upper}): {len(df_dif_presupuesto)}")
+    
+    # Si no hay datos para el mes actual, mostrar advertencia pero continuar
+    if len(df_dif_presupuesto) == 0:
+        print(f"   ⚠️ ADVERTENCIA: No hay datos de presupuesto para el mes {mes_actual_upper}")
+        print(f"   → Se usarán valores de presupuesto = 0")
+    
+    # Si no hay datos para el mes anterior, usar 0 para remanente
+    if len(df_dif_remanente) == 0:
+        print(f"   ⚠️ ADVERTENCIA: No hay datos de remanente para el mes {mes_anterior_upper}")
+        print(f"   → Se usarán valores de remanente = 0")
+    
+    # Crear DataFrame combinado: remanente del mes anterior + presupuesto del mes actual
+    # Primero, crear un DataFrame base con todas las áreas/tipos únicos
     if 'tipo_temp' in df_dif_procesado.columns:
-        # Para CONSTRUCCIÓN, pivotar con área y tipo
-        tabla_dif_construccion = pd.pivot_table(
-            df_dif_procesado[df_dif_procesado['area'] == area_construccion_nombre],
-            values=['remanente', 'presupuesto'],
-            index=['area', 'tipo_temp'],
-            aggfunc='sum',
-            fill_value=0
-        )
+        # Para áreas especiales, necesitamos combinar por (área, tipo_temp)
+        # Obtener todas las combinaciones únicas de área y tipo_temp
+        areas_tipos_unicos = df_dif_procesado[['area', 'tipo_temp']].drop_duplicates()
+        
+        # Hacer merge con remanente (mes anterior) - manejar DataFrame vacío
+        if not df_dif_remanente.empty:
+            df_combinado = areas_tipos_unicos.merge(
+                df_dif_remanente[['area', 'tipo_temp', 'remanente']],
+                on=['area', 'tipo_temp'],
+                how='left'
+            ).fillna({'remanente': 0})
+        else:
+            df_combinado = areas_tipos_unicos.copy()
+            df_combinado['remanente'] = 0
+        
+        # Hacer merge con presupuesto (mes actual) - manejar DataFrame vacío
+        if not df_dif_presupuesto.empty:
+            df_combinado = df_combinado.merge(
+                df_dif_presupuesto[['area', 'tipo_temp', 'presupuesto']],
+                on=['area', 'tipo_temp'],
+                how='left'
+            ).fillna({'presupuesto': 0})
+        else:
+            df_combinado['presupuesto'] = 0
+        
+        # Separar áreas especiales y otras áreas
+        areas_especiales_lista = df_dif_procesado[df_dif_procesado['tipo_temp'].notna()]['area'].unique()
+        
+        # Para áreas especiales, pivotar con área y tipo
+        if len(areas_especiales_lista) > 0:
+            df_especiales_combinado = df_combinado[df_combinado['area'].isin(areas_especiales_lista)]
+            if not df_especiales_combinado.empty:
+                tabla_dif_especiales = pd.pivot_table(
+                    df_especiales_combinado,
+                    values=['remanente', 'presupuesto'],
+                    index=['area', 'tipo_temp'],
+                    aggfunc='sum',  # Solo sumar si hay duplicados (no debería pasar)
+                    fill_value=0
+                )
+            else:
+                tabla_dif_especiales = pd.DataFrame()
+        else:
+            tabla_dif_especiales = pd.DataFrame()
         
         # Para otras áreas, pivotar normal
-        tabla_dif_otros = pd.pivot_table(
-            df_dif_procesado[df_dif_procesado['area'] != area_construccion_nombre],
-            values=['remanente', 'presupuesto'],
-            index='area',
-            aggfunc='sum',
-            fill_value=0
-        )
+        df_otros_combinado = df_combinado[~df_combinado['area'].isin(areas_especiales_lista)] if len(areas_especiales_lista) > 0 else df_combinado
+        if not df_otros_combinado.empty:
+            tabla_dif_otros = pd.pivot_table(
+                df_otros_combinado,
+                values=['remanente', 'presupuesto'],
+                index='area',
+                aggfunc='sum',  # Solo sumar si hay duplicados (no debería pasar)
+                fill_value=0
+            )
+        else:
+            tabla_dif_otros = pd.DataFrame()
     else:
-        # Si no hay CONSTRUCCIÓN, pivotar normal
-        tabla_dif = pd.pivot_table(
-            df_dif_procesado,
-            values=['remanente', 'presupuesto'],
-            index='area',
-            aggfunc='sum',
-            fill_value=0
-        )
-        tabla_dif_construccion = pd.DataFrame()
+        # Si no hay áreas especiales, crear DataFrame combinado simple
+        areas_unicas = df_dif_procesado[['area']].drop_duplicates()
+        
+        # Hacer merge con remanente (mes anterior) - manejar DataFrame vacío
+        if not df_dif_remanente.empty:
+            df_combinado = areas_unicas.merge(
+                df_dif_remanente[['area', 'remanente']],
+                on='area',
+                how='left'
+            ).fillna({'remanente': 0})
+        else:
+            df_combinado = areas_unicas.copy()
+            df_combinado['remanente'] = 0
+        
+        # Hacer merge con presupuesto (mes actual) - manejar DataFrame vacío
+        if not df_dif_presupuesto.empty:
+            df_combinado = df_combinado.merge(
+                df_dif_presupuesto[['area', 'presupuesto']],
+                on='area',
+                how='left'
+            ).fillna({'presupuesto': 0})
+        else:
+            df_combinado['presupuesto'] = 0
+        
+        # Pivotar (aunque ya está agrupado, esto asegura el formato correcto)
+        if not df_combinado.empty:
+            tabla_dif = pd.pivot_table(
+                df_combinado,
+                values=['remanente', 'presupuesto'],
+                index='area',
+                aggfunc='sum',  # Solo sumar si hay duplicados (no debería pasar)
+                fill_value=0
+            )
+        else:
+            tabla_dif = pd.DataFrame()
+        
+        tabla_dif_especiales = pd.DataFrame()
         tabla_dif_otros = tabla_dif
     
-    # Separar ejecutado: para CONSTRUCCIÓN separar ORD y EXT, para otros sumar
-    df_ej_construccion = df_ej[df_ej['area'].apply(es_construccion_proyectos)].copy()
-    df_ej_otros = df_ej[~df_ej['area'].apply(es_construccion_proyectos)].copy()
+    print(f"   ✅ Datos filtrados correctamente por mes antes de pivotar")
+    
+    # Separar ejecutado: para áreas especiales separar ORD y EXT, para otros sumar
+    df_ej_especiales = df_ej[df_ej['area'].apply(es_area_con_tipo_separado)].copy()
+    df_ej_otros = df_ej[~df_ej['area'].apply(es_area_con_tipo_separado)].copy()
     
     # Crear filas de ejecutado procesadas
     ejecutado_rows = []
     
-    # Para CONSTRUCCIÓN: crear dos filas separadas (ORD y EXT)
-    if not df_ej_construccion.empty:
-        for area_original, group in df_ej_construccion.groupby('area'):
-            monto_ord_total = group['monto_ord'].sum()
-            monto_ext_total = group['monto_ext'].sum()
+    # Para áreas especiales: crear dos filas separadas (ORD y EXT)
+    if not df_ej_especiales.empty:
+        for area_original, group in df_ej_especiales.groupby('area'):
+            # Determinar si es ORDINARIO o EXTRAORDINARIO basándose en el nombre
+            es_ord = es_ordinario(area_original)
             
-            # Normalizar nombre de área
-            area_nombre_normalizado = area_construccion_nombre
+            # Normalizar nombre de área (remover "O ")
+            area_nombre_normalizado = normalizar_nombre_area(area_original)
             
-            # Fila ORDINARIO (solo si hay monto)
-            if monto_ord_total > 0:
-                ejecutado_rows.append({
-                    'area': area_nombre_normalizado,
-                    'ejecutado': monto_ord_total,
-                    'es_extraordinario': False
-                })
-            
-            # Fila EXTRAORDINARIO (solo si hay monto)
-            if monto_ext_total > 0:
-                ejecutado_rows.append({
-                    'area': area_nombre_normalizado,
-                    'ejecutado': monto_ext_total,
-                    'es_extraordinario': True
-                })
+            if es_ord:
+                # Es ORDINARIO: usar monto_ord
+                monto_total = group['monto_ord'].sum()
+                if monto_total > 0:
+                    ejecutado_rows.append({
+                        'area': area_nombre_normalizado,
+                        'ejecutado': monto_total,
+                        'es_extraordinario': False
+                    })
+            else:
+                # Es EXTRAORDINARIO: usar monto_ext
+                monto_total = group['monto_ext'].sum()
+                if monto_total > 0:
+                    ejecutado_rows.append({
+                        'area': area_nombre_normalizado,
+                        'ejecutado': monto_total,
+                        'es_extraordinario': True
+                    })
     
     # Para otras áreas: sumar ORD + EXT
     for idx, row in df_ej_otros.iterrows():
@@ -1665,17 +1783,19 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
         # Obtener todas las filas de ejecutado para esta área
         ejecutados_area = df_ejecutado_procesado[df_ejecutado_procesado['area'] == area_name]
         
-        # Para CONSTRUCCIÓN, buscar en tabla_dif_construccion por tipo
-        if area_name == area_construccion_nombre and not tabla_dif_construccion.empty:
+        # Para áreas especiales, buscar en tabla_dif_especiales por tipo
+        areas_especiales_lista = df_dif_procesado[df_dif_procesado['tipo_temp'].notna()]['area'].unique() if 'tipo_temp' in df_dif_procesado.columns else []
+        
+        if area_name in areas_especiales_lista and not tabla_dif_especiales.empty:
             # Buscar remanente y presupuesto según tipo (ORD o EXT)
             for _, ej_row in ejecutados_area.iterrows():
                 tipo_buscar = 'EXTRAORDINARIO' if ej_row['es_extraordinario'] else 'ORDINARIO'
                 
-                # Buscar en tabla_dif_construccion
+                # Buscar en tabla_dif_especiales
                 try:
-                    if (area_name, tipo_buscar) in tabla_dif_construccion.index:
-                        remanente = tabla_dif_construccion.loc[(area_name, tipo_buscar), 'remanente']
-                        presupuesto = tabla_dif_construccion.loc[(area_name, tipo_buscar), 'presupuesto']
+                    if (area_name, tipo_buscar) in tabla_dif_especiales.index:
+                        remanente = tabla_dif_especiales.loc[(area_name, tipo_buscar), 'remanente']
+                        presupuesto = tabla_dif_especiales.loc[(area_name, tipo_buscar), 'presupuesto']
                     else:
                         remanente = 0
                         presupuesto = 0
@@ -1735,9 +1855,9 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
                 'es_extraordinario': False
             })
     
-    # Para tabla_dif_construccion (si existe)
-    if not tabla_dif_construccion.empty:
-        for (area_name, tipo), row in tabla_dif_construccion.iterrows():
+    # Para tabla_dif_especiales (si existe)
+    if not tabla_dif_especiales.empty:
+        for (area_name, tipo), row in tabla_dif_especiales.iterrows():
             # Verificar si ya existe esta combinación en ejecutado
             existe = False
             for ej_row in ejecutado_rows:
@@ -1773,21 +1893,13 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
     # ASIGNAR TIPO CAPEX A CADA ÁREA Y AGRUPAR
     # ===================================================================
     def asignar_tipo_capex_area(row):
-        """Asignar tipo CAPEX según el área y si es extraordinario"""
-        # Obtener el nombre del área desde la columna
-        area = row['area'] if 'area' in row.index else None
-        if pd.isna(area):
-            return 'CAPEX ORDINARIO'
+        """Asignar tipo CAPEX según el flag es_extraordinario (Colombia)"""
+        # En Colombia, el tipo CAPEX ya se determinó en el procesamiento anterior
+        # basándose en el prefijo "O " (ORDINARIO) o sin prefijo (EXTRAORDINARIO)
+        if 'es_extraordinario' in row.index:
+            return 'CAPEX EXTRAORDINARIO' if row['es_extraordinario'] else 'CAPEX ORDINARIO'
         
-        area_str = str(area).strip()
-        
-        # Para DIR CONSTRUCCIÓN Y PROYECTOS, usar el flag es_extraordinario
-        if 'DIR CONSTRUCCIÓN' in area_str and 'PROYECTOS' in area_str:
-            if 'es_extraordinario' in row.index:
-                return 'CAPEX EXTRAORDINARIO' if row['es_extraordinario'] else 'CAPEX ORDINARIO'
-            # Por defecto, si no hay flag, usar la lógica antigua (pero esto no debería pasar)
-            return 'CAPEX EXTRAORDINARIO'
-        
+        # Por defecto, si no hay flag, asumir ORDINARIO
         return 'CAPEX ORDINARIO'
     
     # Agregar columna de tipo CAPEX (antes de eliminar es_extraordinario)
@@ -1810,7 +1922,7 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
             
             # Normalizar nombres de áreas para identificar duplicados
             def normalizar_para_unificacion(area):
-                """Normalizar nombre de área para identificar duplicados (ignorar acentos)"""
+                """Normalizar nombre de área para identificar duplicados (ignorar acentos y variaciones)"""
                 if pd.isna(area):
                     return area
                 area_str = str(area).strip()
@@ -1823,14 +1935,9 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
                     if unicodedata.category(c) != 'Mn'
                 )
                 
-                # DIR CONSTRUCCIÓN Y PROYECTOS / DIR CONSTRUCCION Y PROYECTOS → mismo grupo
-                if 'CONSTRUCCION' in area_sin_acentos and 'PROYECTOS' in area_sin_acentos:
-                    return 'DIR CONSTRUCCION Y PROYECTOS'
-                
-                # Dirección de Retail / DIRECCIÓN DE RETAIL → mismo grupo
-                if 'DIRECCION' in area_sin_acentos and 'RETAIL' in area_sin_acentos:
-                    return 'DIRECCION DE RETAIL'
-                
+                # Para Colombia, las áreas ya están normalizadas en el procesamiento anterior
+                # Solo necesitamos unificar variaciones de escritura (con/sin acentos, mayúsculas/minúsculas)
+                # Retornar el área sin acentos en mayúsculas para comparación
                 return area_sin_acentos
             
             # Agregar columna temporal para agrupar
@@ -1844,23 +1951,14 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
             # Crear diccionario de nombres estándar antes de agrupar
             nombres_estandar = {}
             for area_norm in grupo['area_normalizada'].unique():
-                if area_norm == 'DIR CONSTRUCCION Y PROYECTOS':
-                    nombres_estandar[area_norm] = 'DIR CONSTRUCCIÓN Y PROYECTOS'
-                elif area_norm == 'DIRECCION DE RETAIL':
-                    nombres_estandar[area_norm] = 'Dirección de Retail'
+                # Para Colombia, tomar el primer nombre del grupo original (no normalizado)
+                # Preferir nombres con formato estándar (con mayúsculas/minúsculas apropiadas)
+                nombres_originales = grupo[grupo['area_normalizada'] == area_norm]['area'].unique()
+                if len(nombres_originales) > 0:
+                    # Preferir el nombre más común o el primero si todos son similares
+                    nombres_estandar[area_norm] = nombres_originales[0]
                 else:
-                    # Para otras áreas, tomar el primer nombre del grupo original (no normalizado)
-                    nombres_originales = grupo[grupo['area_normalizada'] == area_norm]['area'].unique()
-                    if len(nombres_originales) > 0:
-                        # Preferir nombre con acento si está disponible
-                        nombre_con_acento = None
-                        for nombre in nombres_originales:
-                            if 'ó' in str(nombre) or 'Ó' in str(nombre) or 'CONSTRUCCIÓN' in str(nombre):
-                                nombre_con_acento = nombre
-                                break
-                        nombres_estandar[area_norm] = nombre_con_acento if nombre_con_acento else nombres_originales[0]
-                    else:
-                        nombres_estandar[area_norm] = area_norm
+                    nombres_estandar[area_norm] = area_norm
             
             # Debug: mostrar qué se va a unificar
             areas_duplicadas = grupo['area_normalizada'].value_counts()
@@ -1893,12 +1991,10 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
             # Debug: mostrar resultado después de unificar
             print(f"\n✅ DEBUG - Después de unificar en {tipo_capex}:")
             print(f"   Total filas: {len(grupo_unificado)}")
-            construccion_filas = grupo_unificado[grupo_unificado['area'].str.contains('CONSTRUCCION', case=False, na=False)]
-            retail_filas = grupo_unificado[grupo_unificado['area'].str.contains('RETAIL', case=False, na=False)]
-            if len(construccion_filas) > 0:
-                print(f"   CONSTRUCCIÓN: {len(construccion_filas)} fila(s) - {construccion_filas['area'].tolist()}")
-            if len(retail_filas) > 0:
-                print(f"   RETAIL: {len(retail_filas)} fila(s) - {retail_filas['area'].tolist()}")
+            # Mostrar áreas especiales de Colombia si existen
+            areas_especiales_col = grupo_unificado[grupo_unificado['area'].str.contains('CADENA|EXPANSION|TECNOLOGIA', case=False, na=False)]
+            if len(areas_especiales_col) > 0:
+                print(f"   Áreas especiales (ORD/EXT): {len(areas_especiales_col)} fila(s) - {areas_especiales_col['area'].tolist()}")
             
             grupos_unificados.append(grupo_unificado)
         
@@ -1907,16 +2003,12 @@ def crear_tabla2_presupuesto_mensual(archivo_excel: str, df_diferencia: pd.DataF
         
         print(f"\n✅ DEBUG - Tabla final unificada:")
         print(f"   Total filas: {len(df_unificado)}")
-        construccion_final = df_unificado[df_unificado['area'].str.contains('CONSTRUCCION', case=False, na=False)]
-        retail_final = df_unificado[df_unificado['area'].str.contains('RETAIL', case=False, na=False)]
-        if len(construccion_final) > 0:
-            print(f"   CONSTRUCCIÓN: {len(construccion_final)} fila(s)")
-            for idx, row in construccion_final.iterrows():
-                print(f"      - {row['area']}: Rem={row[col_remanente]}, Pres={row[col_presupuesto]}, Ejec={row[col_ejecutado]}")
-        if len(retail_final) > 0:
-            print(f"   RETAIL: {len(retail_final)} fila(s)")
-            for idx, row in retail_final.iterrows():
-                print(f"      - {row['area']}: Rem={row[col_remanente]}, Pres={row[col_presupuesto]}, Ejec={row[col_ejecutado]}")
+        # Mostrar áreas especiales de Colombia si existen
+        areas_especiales_final = df_unificado[df_unificado['area'].str.contains('CADENA|EXPANSION|TECNOLOGIA', case=False, na=False)]
+        if len(areas_especiales_final) > 0:
+            print(f"   Áreas especiales (ORD/EXT): {len(areas_especiales_final)} fila(s)")
+            for idx, row in areas_especiales_final.iterrows():
+                print(f"      - {row['area']} ({row['tipo_capex']}): Rem={row[col_remanente]}, Pres={row[col_presupuesto]}, Ejec={row[col_ejecutado]}")
         
         return df_unificado
     
